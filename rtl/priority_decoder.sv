@@ -1,6 +1,12 @@
 module priority_decoder #(parameter WIDTH = 4) (
-    input wire [WIDTH-1:0] in, output logic [$clog2(WIDTH)-1:0] out, output logic valid
+    input wire [WIDTH-1:0] in, 
+    output logic [$clog2(WIDTH)-1:0] out, 
+    output logic valid
 );
+
+// test cases
+// 0000, 1000, 0100, 1100
+
 
 assign valid = | in; // or all bits of in to see if any are on. reduction operator
 
