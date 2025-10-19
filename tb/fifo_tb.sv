@@ -1,139 +1,104 @@
 `timescale 1ns/1ps
+//used LLM for tb creation 
+// ------------------ Writer ------------------
+module writer #(
+  parameter type T = logic [31:0],
+  parameter int DEPTH = 8
+)(
+  input  logic clk,
+  input  logic rst_n,
+  input  logic full,
+  output logic write_en,
+  output T     write_data,
+  output logic done
+);
+  T   data_cnt;
+  logic started;
 
-module tb_fifo;
-
-  localparam int DEPTH  = 8;
-  localparam int CYCLES = 500;
-  typedef logic [31:0] T;
-
-  //dut signals
-  logic clk, reset;
-  logic write_en, read_en;
-  T     write_data, read_data;
-  logic full, empty;
-
-  //instantiation 
-  fifo #(.T(T), .DEPTH(DEPTH)) dut (
-    .clk, .reset,
-    .write_en, .write_data,
-    .read_en,  .read_data,
-    .full, .empty
-  );
-
-
-  initial clk = 0;
-  always #5 clk = ~clk;
-
-
-  T     model_q[$];      
-  logic read_fired_d;     
-  T     exp_data_d;       
-  bit   do_write, do_read;
-  int   size_q;         
-  
- 
-  initial begin
-    reset      = 1;
-    write_en   = 0;
-    read_en    = 0;
-    write_data = '0;
-    repeat (3) @(negedge clk);
-    reset = 0;
-  end
-
-  
-  initial begin
-    @(negedge reset);
-
-    repeat (CYCLES) begin
-      @(negedge clk);
-
-      // defaults
-      write_en = 0;
-      read_en  = 0;
-
-      // choose ops randomly
-      do_write = $urandom_range(0,1);
-      do_read  = $urandom_range(0,1);
-
-      // Gate by GOLDEN MODEL prior size to avoid under/overflow
-      if (size_q == DEPTH) do_write = 0;
-      if (size_q == 0)     do_read  = 0;
-
-      // occasional biases to hit edges
-      if ($urandom_range(0,9) == 0) begin do_write = (size_q < DEPTH); do_read = 0; end
-      if ($urandom_range(0,9) == 1) begin do_read  = (size_q > 0);     do_write = 0; end
-
-      // drive
-      if (do_write) begin
-        write_en   = 1;
-        write_data = $urandom();
-      end
-      if (do_read) begin
-        read_en = 1;
-      end
-    end
-
-
-    forever begin
-      @(negedge clk);
-      if (size_q == 0) begin
-        write_en = 0;
-        read_en  = 0;
-        break;
-      end
-      write_en = 0;
-      read_en  = 1;
-    end
-
-    repeat (2) @(negedge clk);
-    $display("[TB] PASS: ran %0d cycles", CYCLES);
-    $finish;
-  end
-
-  // Scoreboard & checks
-  always_ff @(posedge clk) begin
-    if (reset) begin
-      model_q.delete();
-      read_fired_d <= 0;
-      exp_data_d   <= '0;
-      size_q       <= 0;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      write_en   <= 1'b0;
+      write_data <= '0;
+      data_cnt   <= '0;
+      started    <= 1'b0;
+      done       <= 1'b0;
     end else begin
-      // === Check DUT flags against PRIOR-cycle occupancy ===
-      assert (full  == (size_q == DEPTH))
-        else $fatal(1, "[TB] full flag mismatch: prior_size=%0d full=%0b", size_q, full);
-      assert (empty == (size_q == 0))
-        else $fatal(1, "[TB] empty flag mismatch: prior_size=%0d empty=%0b", size_q, empty);
-
-      // === Update golden model for THIS cycle ===
-      if (write_en && (size_q < DEPTH)) begin
-        model_q.push_back(write_data);
-      end
-      if (read_en && (size_q > 0)) begin
-        exp_data_d   <= model_q.pop_front(); // capture for next-cycle compare
-        read_fired_d <= 1;
+      if (!full && !done) begin
+        // keep writing until FIFO asserts full
+        write_en   <= 1'b1;
+        write_data <= data_cnt;
+        data_cnt   <= data_cnt + T'(1);
+        started    <= 1'b1;
       end else begin
-        read_fired_d <= 0;
+        write_en <= 1'b0;
+        if (started && full) begin
+          done <= 1'b1; // latched once we've seen full
+        end
       end
-
-      // Check registered read data (one-cycle latency)
-      if (read_fired_d) begin
-        assert (read_data === exp_data_d)
-          else $fatal(1, "[TB] Data mismatch: got 0x%08x exp 0x%08x", read_data, exp_data_d);
-      end
-
-      // Update prior-size for next cycle (after applying this cycle's ops)
-      size_q <= model_q.size();
     end
   end
+endmodule
 
-  always_ff @(posedge clk) if (!reset) begin
-    if (read_en && (size_q == 0))
-      $warning("[TB] Read attempted when EMPTY");
-    if (write_en && (size_q == DEPTH))
-      $warning("[TB] Write attempted when FULL");
+// ------------------ Reader ------------------
+module reader #(
+  parameter type T = logic [31:0],
+  parameter int  DEPTH = 8
+)(
+  input  logic clk,
+  input  logic rst_n,
+  input  logic full,
+  input  logic empty,
+  input  T     read_data,
+  output logic read_en,
+  output logic done
+);
+  typedef enum logic [1:0] {WAIT_FULL, DRAIN, DONE} state_t;
+  state_t state;
+
+  T expected;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      state    <= WAIT_FULL;
+      read_en  <= 1'b0;
+      done     <= 1'b0;
+      expected <= '0;
+    end else begin
+      case (state)
+        WAIT_FULL: begin
+          read_en <= 1'b0;
+          if (full) begin
+            state    <= DRAIN;
+            expected <= '0;
+          end
+        end
+
+        DRAIN: begin
+          // Assert read_en while not empty
+          read_en <= ~empty;
+
+          // Compare in the SAME cycle as read_en, since the FIFO outputs data that cycle
+          if (read_en) begin
+            if (read_data !== expected) begin
+              $error("[READ] Mismatch: got %0d (0x%0h), expected %0d (0x%0h)",
+                     read_data, read_data, expected, expected);
+            end else begin
+              $display("[%0t] READ OK: %0d", $time, read_data);
+            end
+            expected <= expected + T'(1);
+          end
+
+          // Move to DONE right after we see empty and stop reading
+          if (empty && !read_en) begin
+            state <= DONE;
+            done  <= 1'b1;
+          end
+        end
+
+        DONE: begin
+          read_en <= 1'b0;
+        end
+      endcase
+    end
   end
-  
-  
-
 endmodule
