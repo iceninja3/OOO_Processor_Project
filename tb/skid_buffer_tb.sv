@@ -98,7 +98,7 @@ module skid_buffer_tb;
         $finish;
     end
     
-    // Helper task to send data like a real producer
+    
     task send_data(input T data);
         @(posedge clk);
         valid_in <= 1;
@@ -109,8 +109,7 @@ module skid_buffer_tb;
         valid_in <= 0;
     endtask
 
-    // ## 4. Monitor ##
-    // Display signals when they change for easy debugging
+
     initial begin
         $monitor("@%0t: [PRODUCER] valid_in=%b, ready_in=%b, data_in=0x%h | [CONSUMER] valid_out=%b, ready_out=%b, data_out=0x%h",
                  $time, valid_in, ready_in, data_in, valid_out, ready_out, data_out);
