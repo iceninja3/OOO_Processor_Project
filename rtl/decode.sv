@@ -20,146 +20,181 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
+`timescale 1ns / 1ps
+
 module decode (
     input logic [31:0] inst, //32 bit input isntruciton
 
     output logic [4:0]  rs1,
-    output logic [4:0]  rs2, //there are 16 registers
+    output logic [4:0]  rs2,
     output logic [4:0]  rd, 
-
 
     output logic [31:0] imm, // immediate gets sign extended to 32 bits
 
     // control signals for EX stage
-    output logic ALUSrc,        // 0: ALU B-src=RS2, 1: ALU B-src=Immediate
-    output logic [2:0]  ALUOp,  // specifies operation to run for the ALU Controller
-    output logic branch,     // 1: Instruction is BNE
-    output logic jump,       // 1: Instruction is JALR
+    output logic ALUSrc,
+    output logic [2:0]  ALUOp,
+    output logic branch,
+    output logic jump,
 
     // control Signals for MEM Stage
-    output logic MemRead,       // 1: Read from data memory (LW, LBU)
-    output logic MemWrite,      // 1: Write to data memory (SW, SH)
+    output logic MemRead,
+    output logic MemWrite,
 
     // control Signals for WB Stage
-    output logic RegWrite,      // 1: Write result to register file
-    output logic MemToReg       // 0: WB result=ALU result, 1: WB result=Mem
+    output logic RegWrite,
+    output logic MemToReg
 );
 
     logic [6:0] opcode;
     logic [2:0] funct3;
     logic [6:0] funct7;
 
+    // These are now internal wires, not unconditional assignments
+    logic [4:0]  inst_rd;
+    logic [4:0]  inst_rs1;
+    logic [4:0]  inst_rs2;
+
     assign opcode = inst[6:0];
-    assign rd = inst[11:7]; // rd is always in the same place
+    assign inst_rd = inst[11:7]; // rd is always in the same place
     assign funct3 = inst[14:12];
-    assign rs1 = inst[19:15]; // rs1 is always in the same place
-    assign rs2 = inst[24:20]; // rs2 is always in the same place
+    assign inst_rs1 = inst[19:15]; // rs1 is always in the same place
+    assign inst_rs2 = inst[24:20]; // rs2 is always in the same place
     assign funct7 = inst[31:25];
 
 
-    // opcodes for each instruction
     localparam opcode_LUI   = 7'b0110111;
-    localparam opcode_ITYPE = 7'b0010011; // ADDI, ORI, SLTIU
-    localparam opcode_RTYPE = 7'b0110011; // SUB, SRA, AND
-    localparam opcode_LOAD  = 7'b0000011; // LW, LBU
-    localparam opcode_STORE = 7'b0100011; // SW, SH
-    localparam opcode_BRANCH = 7'b1100011; // BNE
+    localparam opcode_ITYPE = 7'b0010011;
+    localparam opcode_RTYPE = 7'b0110011;
+    localparam opcode_LOAD  = 7'b0000011;
+    localparam opcode_STORE = 7'b0100011;
+    localparam opcode_BRANCH = 7'b1100011;
     localparam opcode_JALR  = 7'b1100111;
 
-//13 commands to implement from CA spec
+    // funct3 for I-Type
+    localparam funct3_ADDI  = 3'b000;
+    localparam funct3_SLTIU = 3'b011;
+    localparam funct3_ORI   = 3'b110;
 
-    // combo logic block
     always_comb begin
-        // default values for all control signals
+        // --- STEP 1: Set default values ---
         ALUSrc    = 1'b0;
-        ALUOp     = 3'b111;
-        branch = 1'b0;
-        jump   = 1'b0;
+        ALUOp     = 3'b111; // Default to "Illegal"
+        branch    = 1'b0;
+        jump      = 1'b0;
         MemRead   = 1'b0;
         MemWrite  = 1'b0;
         RegWrite  = 1'b0;
         MemToReg  = 1'b0;
-        imm = 32'b0;
+        imm       = 32'b0;
+        
+        // **BUG FIX**: Default rs1, rs2, and rd to 0
+        rs1       = 5'b0;
+        rs2       = 5'b0;
+        rd        = 5'b0;
 
-        // set control signals based on opcode of instruction
+        // --- STEP 2: Decode Control Signals & Register Addresses ---
         case (opcode)
             opcode_LUI: begin
                 RegWrite  = 1'b1;
-                // Note: ALUSrc is 0, but ALUOp tells ALU to "pass B"
-                ALUOp     = 3'b100; // 'LUI' contract
+                ALUOp     = 3'b100;
+                rd        = inst_rd; // U-Type has rd
             end
 
             opcode_ITYPE: begin // ADDI, ORI, SLTIU
                 RegWrite  = 1'b1;
-                ALUSrc    = 1'b1; // B-src is Immediate
-                ALUOp     = 3'b010; // 'I-Type' contract
+                ALUSrc    = 1'b1;
+                ALUOp     = 3'b010;
+                rd        = inst_rd; // I-Type has rd
+                rs1       = inst_rs1; // I-Type has rs1
             end
 
             opcode_RTYPE: begin // SUB, SRA, AND
                 RegWrite  = 1'b1;
-                ALUSrc    = 1'b0; // B-src is RS2
-                ALUOp     = 3'b001; // 'R-Type' contract
+                ALUSrc    = 1'b0;
+                ALUOp     = 3'b001;
+                rd        = inst_rd; // R-Type has rd
+                rs1       = inst_rs1; // R-Type has rs1
+                rs2       = inst_rs2; // R-Type has rs2
             end
 
             opcode_LOAD: begin // LW, LBU
                 RegWrite  = 1'b1;
-                ALUSrc    = 1'b1; // B-src is Immediate
+                ALUSrc    = 1'b1;
                 MemRead   = 1'b1;
-                MemToReg  = 1'b1; // Result comes from Memory
-                ALUOp     = 3'b000; // 'Load/Store Add' contract
+                MemToReg  = 1'b1;
+                ALUOp     = 3'b000;
+                rd        = inst_rd; // I-Type (Load) has rd
+                rs1       = inst_rs1; // I-Type (Load) has rs1
             end
 
             opcode_STORE: begin // SW, SH
-                // RegWrite is 0 (default)
-                ALUSrc    = 1'b1; // B-src is Immediate
+                ALUSrc    = 1'b1;
                 MemWrite  = 1'b1;
-                ALUOp     = 3'b000; // 'Load/Store Add' contract
+                ALUOp     = 3'b000;
+                rs1       = inst_rs1; // S-Type has rs1
+                rs2       = inst_rs2; // S-Type has rs2
             end
 
             opcode_BRANCH: begin // BNE
-                // RegWrite is 0 (default)
-                ALUSrc    = 1'b0; // B-src is RS2 (for comparison)
-                branch = 1'b1;
-                ALUOp     = 3'b011; // 'Branch' contract
+                ALUSrc    = 1'b0;
+                ALUOp     = 3'b011;
+                rs1       = inst_rs1; // B-Type has rs1
+                rs2       = inst_rs2; // B-Type has rs2
+                
+                // **BUG FIX**: Only enable for BNE
+                if (funct3 == 3'b001) begin 
+                    branch = 1'b1;
+                end
             end
 
             opcode_JALR: begin
                 RegWrite  = 1'b1;
-                ALUSrc    = 1'b1; // B-src is Immediate
-                jump   = 1'b1;
-                ALUOp     = 3'b101; // 'JALR Add' contract
+                ALUSrc    = 1'b1;
+                jump      = 1'b1;
+                ALUOp     = 3'b101;
+                rd        = inst_rd; // I-Type (JALR) has rd
+                rs1       = inst_rs1; // I-Type (JALR) has rs1
             end
-
             default: begin
-
+                // All defaults are set
             end
         endcase
 
 
-        // generating Immediate based on diff opcodes
+        // --- STEP 3: Generate Immediate ---
         case (opcode)
             opcode_LUI:
-                // U-Type: { imm[31:12], 12'b0 }
                 imm = { inst[31:12], 12'b0 };
 
-            opcode_ITYPE,
+            opcode_ITYPE:
+                // **BUG FIX**: Handle ORI zero-extension
+                if (funct3 == funct3_ORI) begin
+                    // Zero-extend for ORI
+                    imm = { 20'b0, inst[31:20] };
+                end else begin
+                    // Sign-extend for ADDI, SLTIU
+                    imm = { {20{inst[31]}}, inst[31:20] };
+                end
+
             opcode_LOAD,
             opcode_JALR:
-                // I-Type: Sign-extend imm[11:0]
+                // Sign-extend I-Type
                 imm = { {20{inst[31]}}, inst[31:20] };
 
             opcode_STORE:
-                // S-Type: Sign-extend { imm[11:5], imm[4:0] }
+                // Sign-extend S-Type
                 imm = { {20{inst[31]}}, inst[31:25], inst[11:7] };
 
             opcode_BRANCH:
-                // B-Type: Sign-extend { imm[12], imm[10:5], imm[4:1], 1'b0 }
+                // Sign-extend B-Type
                 imm = { {19{inst[31]}}, inst[31], inst[7], inst[30:25], inst[11:8], 1'b0 };
 
-            // imm set to 0 if R type (which is default here)
             default:
                 imm = 32'b0;
         endcase
     end
 
 endmodule
+
+
