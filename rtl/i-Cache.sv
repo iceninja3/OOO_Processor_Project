@@ -13,11 +13,7 @@ initial begin
     $readmemh("program.hex", mem);
 end
 
-//using a synchronous read for BRAM 
-
-always_ff @(posedge clk) begin
-    rdata <= mem[addr];
-end
+assign rdata = mem[addr];
 
 
 endmodule 
